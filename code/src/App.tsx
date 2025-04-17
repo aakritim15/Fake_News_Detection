@@ -32,7 +32,7 @@ function App() {
     setPredictions(null);
 
     try {
-      const response = await fetch('https://5be4-2405-201-11-d11a-950f-1d43-7929-2eb.ngrok-free.app', {
+      const response = await fetch('https://fakenewsdetectiobackend-production.up.railway.app/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: newsInput }),
