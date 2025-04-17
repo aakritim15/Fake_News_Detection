@@ -32,7 +32,7 @@ function App() {
     setPredictions(null);
 
     try {
-      const response = await fetch('https://fakenewsdetectiobackend-production.up.railway.app/', {
+      const response = await fetch('https://fakenewsdetectiobackend-production.up.railway.app', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: newsInput }),
