@@ -7,6 +7,11 @@ import torch
 import torch.nn as nn
 import re
 import string
+from dotenv import load_dotenv
+from reddit_integration import RedditFactChecker
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,16 +34,11 @@ def preprocess_text(text: str) -> str:
 
 # Initialize Flask
 app = Flask(__name__)
-# Enable CORS with explicit methods and headers
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+# Enable CORS
+CORS(app, origins=["http://localhost:5173"], methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
 
-# Global CORS headers for preflight
-@app.after_request
-def apply_cors(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    return response
+# Initialize Reddit fact checker
+reddit_checker = RedditFactChecker()
 
 # Root endpoint: health check on GET, prediction on POST
 @app.route("/", methods=["GET", "POST", "OPTIONS"])
@@ -53,10 +53,13 @@ def root():
 # Predict endpoint remains available
 @app.route("/predict", methods=["POST", "OPTIONS"])
 def predict():
+    print("hello")
     if request.method == "OPTIONS":
         return jsonify({}), 204
     data = request.get_json(force=True) or {}
     text = data.get("text", "")
+    include_reddit = data.get("include_reddit", False)
+    
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
@@ -65,8 +68,107 @@ def predict():
 
     logger.info(f"Received text length: {len(text)}")
     sk_preds = {name: int(model.predict(vec)[0]) for name, model in models.items()}
-    response = {name: ("Real" if p == 1 else "Fake") for name, p in sk_preds.items()}
+    logger.info("sk_preds", sk_preds)
+    ml_predictions = {name: ("Real" if p == 1 else "Fake") for name, p in sk_preds.items()}
+    
+    response = {"ml_predictions": ml_predictions}
+    
+    # Add Reddit fact-checking if requested
+    if include_reddit:
+        try:
+            discussions = reddit_checker.search_related_discussions(text)
+            credibility_analysis = reddit_checker.analyze_credibility_signals(discussions)
+            
+            response["reddit_analysis"] = {
+                "discussions": discussions[:5],  # Return top 5 discussions
+                "credibility": credibility_analysis
+            }
+        except Exception as e:
+            logger.error(f"Reddit analysis failed: {e}")
+            response["reddit_analysis"] = {"error": "Reddit analysis unavailable"}
+    
     return jsonify(response)
+
+
+# New endpoint for fetching hot posts from news subreddits
+@app.route("/fetch-hot-posts", methods=["POST", "OPTIONS"])
+def fetch_hot_posts():
+    if request.method == "OPTIONS":
+        return jsonify({}), 204
+    
+    data = request.get_json(force=True) or {}
+    subreddits = data.get("subreddits", ["news", "worldnews", "politics"])
+    limit = data.get("limit", 10)
+    
+    try:
+        posts = reddit_checker.fetch_hot_posts(subreddits, limit)
+        return jsonify({
+            "subreddits": subreddits,
+            "posts": posts,
+            "total_found": len(posts)
+        })
+    except Exception as e:
+        logger.error(f"Failed to fetch hot posts: {e}")
+        return jsonify({"error": f"Failed to fetch hot posts: {str(e)}"}), 500
+
+
+# New endpoint specifically for Reddit fact-checking
+@app.route("/fact-check", methods=["POST", "OPTIONS"])
+def fact_check():
+    if request.method == "OPTIONS":
+        return jsonify({}), 204
+    
+    data = request.get_json(force=True) or {}
+    text = data.get("text", "")
+    
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+    
+    try:
+        # Get ML predictions
+        cleaned = preprocess_text(text)
+        vec = vectorizer.transform([cleaned])
+        sk_preds = {name: int(model.predict(vec)[0]) for name, model in models.items()}
+        ml_predictions = {name: ("Real" if p == 1 else "Fake") for name, p in sk_preds.items()}
+        
+        # Get Reddit discussions
+        discussions = reddit_checker.search_related_discussions(text)
+        credibility_analysis = reddit_checker.analyze_credibility_signals(discussions)
+        
+        # Combine analysis
+        response = {
+            "ml_predictions": ml_predictions,
+            "reddit_discussions": discussions,
+            "credibility_analysis": credibility_analysis,
+            "combined_assessment": _generate_combined_assessment(ml_predictions, credibility_analysis)
+        }
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Fact-check failed: {e}")
+        return jsonify({"error": f"Fact-check analysis failed: {str(e)}"}), 500
+
+def _generate_combined_assessment(ml_predictions, credibility_analysis):
+    """Generate a combined assessment from ML and Reddit analysis"""
+    # Count ML predictions
+    fake_count = sum(1 for pred in ml_predictions.values() if pred == "Fake")
+    real_count = len(ml_predictions) - fake_count
+    
+    ml_confidence = "High" if abs(fake_count - real_count) >= 3 else "Medium" if abs(fake_count - real_count) >= 1 else "Low"
+    ml_verdict = "Likely Fake" if fake_count > real_count else "Likely Real"
+    
+    # Reddit credibility
+    reddit_score = credibility_analysis.get('credibility_score', 0.5)
+    reddit_verdict = "Credible" if reddit_score > 0.6 else "Questionable" if reddit_score > 0.4 else "Low Credibility"
+    
+    return {
+        "ml_verdict": ml_verdict,
+        "ml_confidence": ml_confidence,
+        "reddit_verdict": reddit_verdict,
+        "reddit_score": reddit_score,
+        "recommendation": f"ML models suggest this is {ml_verdict.lower()} with {ml_confidence.lower()} confidence. Reddit discussions indicate {reddit_verdict.lower()} based on community engagement."
+    }
 
 # Load models directory
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
