@@ -4,3 +4,8 @@ joblib
 torch
 scikit-learn
 gunicorn
+praw
+requests
+python-dotenv
+beautifulsoup4
+imbalanced-learn
